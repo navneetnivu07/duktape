@@ -154,6 +154,7 @@ DUK_LOCAL const duk_uint8_t *duk__match_regexp(duk_re_matcher_ctx *re_ctx, const
 		}
 		re_ctx->steps_count++;
 
+		/* FIXME: all ops are 7-bit so could assert & read one byte */
 		op = (duk_small_int_t) duk__bc_get_u32(re_ctx, &pc);
 
 		DUK_DDD(DUK_DDDPRINT("match: rec=%ld, steps=%ld, pc (after op)=%ld, sp=%ld, op=%ld",

@@ -518,9 +518,9 @@ duk_heap *duk_heap_alloc(duk_alloc_function alloc_func,
                          void *heap_udata,
                          duk_fatal_function fatal_func);
 DUK_INTERNAL_DECL void duk_heap_free(duk_heap *heap);
-DUK_INTERNAL_DECL void duk_free_hobject_inner(duk_heap *heap, duk_hobject *h);
-DUK_INTERNAL_DECL void duk_free_hbuffer_inner(duk_heap *heap, duk_hbuffer *h);
-DUK_INTERNAL_DECL void duk_free_hstring_inner(duk_heap *heap, duk_hstring *h);
+DUK_INTERNAL_DECL void duk_free_hobject(duk_heap *heap, duk_hobject *h);
+DUK_INTERNAL_DECL void duk_free_hbuffer(duk_heap *heap, duk_hbuffer *h);
+DUK_INTERNAL_DECL void duk_free_hstring(duk_heap *heap, duk_hstring *h);
 DUK_INTERNAL_DECL void duk_heap_free_heaphdr_raw(duk_heap *heap, duk_heaphdr *hdr);
 
 DUK_INTERNAL_DECL void duk_heap_insert_into_heap_allocated(duk_heap *heap, duk_heaphdr *hdr);
@@ -587,17 +587,23 @@ DUK_INTERNAL_DECL void duk_heaphdr_incref(duk_heaphdr *h);
 #if 0  /* unused */
 DUK_INTERNAL_DECL void duk_heaphdr_incref_allownull(duk_heaphdr *h);
 #endif
+#if 0  /*FIXME*/
 DUK_INTERNAL_DECL void duk_heaphdr_decref(duk_hthread *thr, duk_heaphdr *h);
 #if 0  /* unused */
 DUK_INTERNAL_DECL void duk_heaphdr_decref_norz(duk_hthread *thr, duk_heaphdr *h);
 #endif
 DUK_INTERNAL_DECL void duk_heaphdr_decref_allownull(duk_hthread *thr, duk_heaphdr *h);
+#endif
 DUK_INTERNAL_DECL void duk_heaphdr_refzero(duk_hthread *thr, duk_heaphdr *h);
 DUK_INTERNAL_DECL void duk_heaphdr_refzero_norz(duk_hthread *thr, duk_heaphdr *h);
+DUK_INTERNAL_DECL void duk_hstring_refzero(duk_hthread *thr, duk_hstring *h);  /* no 'norz' variant */
+DUK_INTERNAL_DECL void duk_hbuffer_refzero(duk_hthread *thr, duk_hbuffer *h);  /* no 'norz' variant */
+DUK_INTERNAL_DECL void duk_hobject_refzero(duk_hthread *thr, duk_hobject *h);
+DUK_INTERNAL_DECL void duk_hobject_refzero_norz(duk_hthread *thr, duk_hobject *h);
 DUK_INTERNAL_DECL void duk_heaphdr_refcount_finalize(duk_hthread *thr, duk_heaphdr *hdr);
-#else
+#else  /* DUK_USE_REFERENCE_COUNTING */
 /* no refcounting */
-#endif
+#endif  /* DUK_USE_REFERENCE_COUNTING */
 
 #if defined(DUK_USE_MARK_AND_SWEEP)
 DUK_INTERNAL_DECL duk_bool_t duk_heap_mark_and_sweep(duk_heap *heap, duk_small_uint_t flags);

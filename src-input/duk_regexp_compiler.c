@@ -352,6 +352,8 @@ DUK_LOCAL void duk__parse_disjunction(duk_re_compiler_ctx *re_ctx, duk_bool_t ex
 				                        offset - unpatched_disjunction_split);
 			}
 
+			/* FIXME: all REOPs are one byte so append directly */
+
 			/* add a new pending split to the beginning of the entire disjunction */
 			(void) duk__insert_u32(re_ctx,
 			                       entry_offset,

@@ -4312,6 +4312,7 @@ DUK_EXTERNAL void duk_pop_n(duk_context *ctx, duk_idx_t count) {
 
 	/* XXX: optimize loops */
 
+	/* FIXME */
 #if defined(DUK_USE_REFERENCE_COUNTING)
 	while (count > 0) {
 		count--;

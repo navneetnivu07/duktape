@@ -49,40 +49,69 @@ DUK_LOCAL void duk__queue_refzero(duk_heap *heap, duk_heaphdr *hdr) {
  *  the refcounts.
  *
  *  Note that any of the decref's may cause a refcount to drop to zero, BUT
- *  it will not be processed inline; instead, because refzero is already
- *  running, the objects will just be queued to refzero list and processed
- *  later.  This eliminates C recursion.
+ *  it will not be processed inline.  If refcount finalization is triggered
+ *  by refzero processing, the objects will be just queued to the refzero
+ *  list and processed later which eliminates C recursion.  If refcount
+ *  finalization is triggered by mark-and-sweep, any refzero situations are
+ *  ignored because mark-and-sweep will deal with them.  NORZ variants can
+ *  be used here in both cases.
  */
 
 DUK_LOCAL void duk__refcount_finalize_hobject(duk_hthread *thr, duk_hobject *h) {
 	duk_uint_fast32_t i;
+	duk_uint_fast32_t n;
+	duk_propvalue *p_val;
+	duk_hstring **p_key;
+	duk_uint8_t *p_flag;
 
 	DUK_ASSERT(h);
 	DUK_ASSERT(DUK_HEAPHDR_GET_TYPE((duk_heaphdr *) h) == DUK_HTYPE_OBJECT);
 
-	/* XXX: better to get base and walk forwards? */
+	/* FIXME: better to get base and walk forwards? */
 
-	for (i = 0; i < (duk_uint_fast32_t) DUK_HOBJECT_GET_ENEXT(h); i++) {
-		duk_hstring *key = DUK_HOBJECT_E_GET_KEY(thr->heap, h, i);
+	p_key = DUK_HOBJECT_E_GET_KEY_BASE(thr->heap, h);
+	p_val = DUK_HOBJECT_E_GET_VALUE_BASE(thr->heap, h);
+	p_flag = DUK_HOBJECT_E_GET_FLAGS_BASE(thr->heap, h);
+	n = DUK_HOBJECT_GET_ENEXT(h);
+	while (n-- > 0) {
+		duk_hstring *key;
+
+		key = p_key[n];
 		if (!key) {
 			continue;
 		}
-		duk_heaphdr_decref(thr, (duk_heaphdr *) key);
-		if (DUK_HOBJECT_E_SLOT_IS_ACCESSOR(thr->heap, h, i)) {
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) DUK_HOBJECT_E_GET_VALUE_GETTER(thr->heap, h, i));
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) DUK_HOBJECT_E_GET_VALUE_SETTER(thr->heap, h, i));
+		DUK_HSTRING_DECREF_NORZ(thr, key);
+		if (p_flag[n] & DUK_PROPDESC_FLAG_ACCESSOR) {
+			duk_hobject *h_getset;
+			h_getset = p_val[n].a.get;
+			DUK_ASSERT(DUK_HEAPHDR_IS_OBJECT((duk_heaphdr *) h_getset));
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, h_getset);
+			h_getset = p_val[n].a.set;
+			DUK_ASSERT(DUK_HEAPHDR_IS_OBJECT((duk_heaphdr *) h_getset));
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, h_getset);
 		} else {
-			duk_tval_decref(thr, DUK_HOBJECT_E_GET_VALUE_TVAL_PTR(thr->heap, h, i));
+			duk_tval *tv_val;
+			tv_val = &p_val[n].v;
+			DUK_TVAL_DECREF_NORZ(thr, tv_val);
 		}
 	}
 
-	for (i = 0; i < (duk_uint_fast32_t) DUK_HOBJECT_GET_ASIZE(h); i++) {
-		duk_tval_decref(thr, DUK_HOBJECT_A_GET_VALUE_PTR(thr->heap, h, i));
+	p_val = DUK_HOBJECT_A_GET_BASE(thr->heap, h);
+	n = DUK_HOBJECT_GET_ASIZE(h);
+	while (n-- > 0) {
+		duk_tval *tv_val;
+		tv_val = &p_val[n];
+		DUK_TVAL_DECREF_NORZ(thr, tv_val);
 	}
 
 	/* hash part is a 'weak reference' and does not contribute */
 
-	duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) DUK_HOBJECT_GET_PROTOTYPE(thr->heap, h));
+	{
+		duk_hobject *h_proto;
+		h_proto = (duk_hobject *) DUK_HOBJECT_GET_PROTOTYPE(thr->heap, h);
+		DUK_ASSERT(h_proto == NULL || DUK_HEAPHDR_IS_OBJECT((duk_heaphdr *) h_proto));
+		DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, h_proto);
+	}
 
 	/* XXX: rearrange bits to allow a switch case to be used here? */
 	/* XXX: add a fast path for objects (and arrays)? */
@@ -100,18 +129,21 @@ DUK_LOCAL void duk__refcount_finalize_hobject(duk_hthread *thr, duk_hobject *h) 
 		tv = DUK_HCOMPFUNC_GET_CONSTS_BASE(thr->heap, f);
 		tv_end = DUK_HCOMPFUNC_GET_CONSTS_END(thr->heap, f);
 		while (tv < tv_end) {
-			duk_tval_decref(thr, tv);
+			DUK_TVAL_DECREF_NORZ(thr, tv);
 			tv++;
 		}
 
 		funcs = DUK_HCOMPFUNC_GET_FUNCS_BASE(thr->heap, f);
 		funcs_end = DUK_HCOMPFUNC_GET_FUNCS_END(thr->heap, f);
 		while (funcs < funcs_end) {
-			duk_heaphdr_decref(thr, (duk_heaphdr *) *funcs);
+			duk_hobject *h_func;
+			h_func = *funcs;
+			DUK_ASSERT(DUK_HEAPHDR_IS_OBJECT(h_func));
+			DUK_HCOMPFUNC_DECREF_NORZ(thr, (duk_hcompfunc *) h_func);
 			funcs++;
 		}
 
-		duk_heaphdr_decref(thr, (duk_heaphdr *) DUK_HCOMPFUNC_GET_DATA(thr->heap, f));
+		DUK_HBUFFER_DECREF(thr, (duk_hbuffer *) DUK_HCOMPFUNC_GET_DATA(thr->heap, f));
 	} else if (DUK_HOBJECT_IS_NATFUNC(h)) {
 		duk_hnatfunc *f = (duk_hnatfunc *) h;
 		DUK_UNREF(f);
@@ -120,7 +152,7 @@ DUK_LOCAL void duk__refcount_finalize_hobject(duk_hthread *thr, duk_hobject *h) 
 	} else if (DUK_HOBJECT_IS_BUFOBJ(h)) {
 		duk_hbufobj *b = (duk_hbufobj *) h;
 		if (b->buf) {
-			duk_heaphdr_decref(thr, (duk_heaphdr *) b->buf);
+			DUK_HBUFFER_DECREF_NORZ(thr, (duk_hbuffer *) b->buf);
 		}
 #endif  /* DUK_USE_BUFFEROBJECT_SUPPORT */
 	} else if (DUK_HOBJECT_IS_THREAD(h)) {
@@ -129,17 +161,17 @@ DUK_LOCAL void duk__refcount_finalize_hobject(duk_hthread *thr, duk_hobject *h) 
 
 		tv = t->valstack;
 		while (tv < t->valstack_top) {
-			duk_tval_decref(thr, tv);
+			DUK_TVAL_DECREF_NORZ(thr, tv);
 			tv++;
 		}
 
 		for (i = 0; i < (duk_uint_fast32_t) t->callstack_top; i++) {
 			duk_activation *act = t->callstack + i;
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) DUK_ACT_GET_FUNC(act));
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) act->var_env);
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) act->lex_env);
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, (duk_hobject *) DUK_ACT_GET_FUNC(act));
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, (duk_hobject *) act->var_env);
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, (duk_hobject *) act->lex_env);
 #ifdef DUK_USE_NONSTD_FUNC_CALLER_PROPERTY
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) act->prev_caller);
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, (duk_hobject *) act->prev_caller);
 #endif
 		}
 
@@ -150,28 +182,21 @@ DUK_LOCAL void duk__refcount_finalize_hobject(duk_hthread *thr, duk_hobject *h) 
 #endif
 
 		for (i = 0; i < DUK_NUM_BUILTINS; i++) {
-			duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) t->builtins[i]);
+			DUK_HOBJECT_DECREF_NORZ_ALLOWNULL(thr, (duk_hobject *) t->builtins[i]);
 		}
 
-		duk_heaphdr_decref_allownull(thr, (duk_heaphdr *) t->resumer);
+		DUK_HTHREAD_DECREF_NORZ_ALLOWNULL(thr, (duk_hthread *) t->resumer);
 	}
 }
 
 DUK_INTERNAL void duk_heaphdr_refcount_finalize(duk_hthread *thr, duk_heaphdr *hdr) {
 	DUK_ASSERT(hdr);
 
-	switch (DUK_HEAPHDR_GET_TYPE(hdr)) {
-	case DUK_HTYPE_OBJECT:
+	if (DUK_HEAPHDR_GET_TYPE(hdr) == DUK_HTYPE_OBJECT) {
 		duk__refcount_finalize_hobject(thr, (duk_hobject *) hdr);
-		break;
-	case DUK_HTYPE_BUFFER:
-		/* nothing to finalize */
-		break;
-	case DUK_HTYPE_STRING:
-		/* cannot happen: strings are not put into refzero list (they don't even have the next/prev pointers) */
-	default:
-		DUK_UNREACHABLE();
 	}
+	/* DUK_HTYPE_BUFFER: nothing to finalize */
+	/* DUK_HTYPE_STRING: nothing to finalize */
 }
 
 #if defined(DUK_USE_FINALIZER_SUPPORT)
@@ -383,7 +408,8 @@ DUK_INTERNAL void duk_refzero_free_pending(duk_hthread *thr) {
 		{
 			/* no -> decref members, then free */
 			duk__refcount_finalize_hobject(thr, obj);
-			duk_heap_free_heaphdr_raw(heap, h1);
+			DUK_ASSERT(DUK_HEAPHDR_GET_TYPE(h1) == DUK_HTYPE_OBJECT);  /* currently, always the case */
+			duk_free_hobject(heap, (duk_hobject *) h1);
 		}
 
 		count++;
@@ -418,50 +444,93 @@ DUK_INTERNAL void duk_refzero_free_pending(duk_hthread *thr) {
  *
  *  Decref may trigger immediate refzero handling, which may free and finalize
  *  an arbitrary number of objects.
+ *
+ *  Refzero handling is skipped entirely if (1) mark-and-sweep is running or
+ *  (2) execution is paused in the debugger.  The objects are left in the heap,
+ *  and will be freed by mark-and-sweep or eventual heap destruction.
+ *
+ *  This is necessary during mark-and-sweep because refcounts are also updated
+ *  during the sweep phase (otherwise objects referenced by a swept object
+ *  would have incorrect refcounts) which then calls here.  This could be
+ *  avoided by using separate decref macros in mark-and-sweep; however,
+ *  mark-and-sweep also calls finalizers which would use the ordinary decref
+ *  macros anyway.
+ *
+ *  The DUK__RZ_SUPPRESS_CHECK() must be enabled also when mark-and-sweep
+ *  support has been disabled: the flag is also used in heap destruction when
+ *  running finalizers for remaining objects, and the flag prevents objects
+ *  from being moved around in heap linked lists.
  */
 
-DUK_LOCAL DUK_ALWAYS_INLINE void duk__heaphdr_refzero_helper(duk_hthread *thr, duk_heaphdr *h, duk_bool_t skip_free_pending) {
+#if defined(DUK_USE_DEBUGGER_SUPPORT)
+#define DUK__RZ_SUPPRESS_COND() \
+	(DUK_HEAP_HAS_MARKANDSWEEP_RUNNING(heap) || DUK_HEAP_IS_PAUSED(heap))
+#else
+#define DUK__RZ_SUPPRESS_COND() \
+	(DUK_HEAP_HAS_MARKANDSWEEP_RUNNING(heap))
+#endif
+#define DUK__RZ_SUPPRESS_CHECK() do { \
+		if (DUK_UNLIKELY(DUK__RZ_SUPPRESS_COND())) { \
+			DUK_DDD(DUK_DDDPRINT("refzero handling suppressed when mark-and-sweep running, object: %p", (void *) h)); \
+			return; \
+		} \
+	} while (0)
+
+/* FIXME: reduce duplication */
+
+DUK_LOCAL DUK_ALWAYS_INLINE void duk__hstring_refzero_helper(duk_hthread *thr, duk_hstring *h) {
 	duk_heap *heap;
 
 	DUK_ASSERT(thr != NULL);
 	DUK_ASSERT(h != NULL);
-
 	heap = thr->heap;
-	DUK_DDD(DUK_DDDPRINT("refzero %p: %!O", (void *) h, (duk_heaphdr *) h));
 
-	/*
-	 *  Refzero handling is skipped entirely if (1) mark-and-sweep is
-	 *  running or (2) execution is paused in the debugger.  The objects
-	 *  are left in the heap, and will be freed by mark-and-sweep or
-	 *  eventual heap destruction.
-	 *
-	 *  This is necessary during mark-and-sweep because refcounts are also
-	 *  updated during the sweep phase (otherwise objects referenced by a
-	 *  swept object would have incorrect refcounts) which then calls here.
-	 *  This could be avoided by using separate decref macros in
-	 *  mark-and-sweep; however, mark-and-sweep also calls finalizers which
-	 *  would use the ordinary decref macros anyway and still call this
-	 *  function.
-	 *
-	 *  This check must be enabled also when mark-and-sweep support has been
-	 *  disabled: the flag is also used in heap destruction when running
-	 *  finalizers for remaining objects, and the flag prevents objects from
-	 *  being moved around in heap linked lists.
-	 */
+	DUK__RZ_SUPPRESS_CHECK();
+	duk_heap_strcache_string_remove(thr->heap, h);
+	duk_heap_string_remove(heap, h);
+	duk_free_hstring(heap, h);
+}
 
-	/* XXX: ideally this would be just one flag (maybe a derived one) so
-	 * that a single bit test is sufficient to check the condition.
-	 */
-#if defined(DUK_USE_DEBUGGER_SUPPORT)
-	if (DUK_UNLIKELY(DUK_HEAP_HAS_MARKANDSWEEP_RUNNING(heap) || DUK_HEAP_IS_PAUSED(heap))) {
-#else
-	if (DUK_UNLIKELY(DUK_HEAP_HAS_MARKANDSWEEP_RUNNING(heap))) {
-#endif
-		DUK_DDD(DUK_DDDPRINT("refzero handling suppressed when mark-and-sweep running, object: %p", (void *) h));
-		return;
+DUK_LOCAL DUK_ALWAYS_INLINE void duk__hbuffer_refzero_helper(duk_hthread *thr, duk_hbuffer *h) {
+	duk_heap *heap;
+
+	DUK_ASSERT(thr != NULL);
+	DUK_ASSERT(h != NULL);
+	heap = thr->heap;
+
+	DUK__RZ_SUPPRESS_CHECK();
+	duk_heap_remove_any_from_heap_allocated(heap, (duk_heaphdr *) h);
+	duk_free_hbuffer(heap, (duk_hbuffer *) h);
+}
+
+DUK_LOCAL DUK_ALWAYS_INLINE void duk__hobject_refzero_helper(duk_hthread *thr, duk_hobject *h, duk_bool_t skip_free_pending) {
+	duk_heap *heap;
+
+	DUK_ASSERT(thr != NULL);
+	DUK_ASSERT(h != NULL);
+	heap = thr->heap;
+
+	DUK__RZ_SUPPRESS_CHECK();
+	duk_heap_remove_any_from_heap_allocated(heap, (duk_heaphdr *) h);
+	duk__queue_refzero(heap, (duk_heaphdr *) h);
+	if (!skip_free_pending) {
+		duk_refzero_free_pending(thr);
 	}
+}
 
-	switch ((duk_small_int_t) DUK_HEAPHDR_GET_TYPE(h)) {
+/* FIXME: no longer needed with specific types */
+DUK_LOCAL DUK_ALWAYS_INLINE void duk__heaphdr_refzero_helper(duk_hthread *thr, duk_heaphdr *h, duk_bool_t skip_free_pending) {
+	duk_heap *heap;
+	duk_small_uint_t htype;
+
+	DUK_ASSERT(thr != NULL);
+	DUK_ASSERT(h != NULL);
+	heap = thr->heap;
+
+	htype = (duk_small_uint_t) DUK_HEAPHDR_GET_TYPE(h);
+	DUK__RZ_SUPPRESS_CHECK();
+
+	switch (htype) {
 	case DUK_HTYPE_STRING:
 		/* Strings have no internal references but do have "weak"
 		 * references in the string cache.  Also note that strings
@@ -471,11 +540,7 @@ DUK_LOCAL DUK_ALWAYS_INLINE void duk__heaphdr_refzero_helper(duk_hthread *thr, d
 
 		duk_heap_strcache_string_remove(heap, (duk_hstring *) h);
 		duk_heap_string_remove(heap, (duk_hstring *) h);
-#if 0
-		duk_heap_free_heaphdr_raw(heap, h);
-#endif
-		duk_free_hstring_inner(heap, (duk_hstring *) h);
-		DUK_FREE(heap, h);
+		duk_free_hstring(heap, (duk_hstring *) h);
 		break;
 
 	case DUK_HTYPE_OBJECT:
@@ -497,11 +562,7 @@ DUK_LOCAL DUK_ALWAYS_INLINE void duk__heaphdr_refzero_helper(duk_hthread *thr, d
 		 */
 
 		duk_heap_remove_any_from_heap_allocated(heap, h);
-#if 0
-		duk_heap_free_heaphdr_raw(heap, h);
-#endif
-		duk_free_hbuffer_inner(heap, (duk_hbuffer *) h);
-		DUK_FREE(heap, h);
+		duk_free_hbuffer(heap, (duk_hbuffer *) h);
 		break;
 
 	default:
@@ -516,6 +577,22 @@ DUK_INTERNAL void duk_heaphdr_refzero(duk_hthread *thr, duk_heaphdr *h) {
 
 DUK_INTERNAL void duk_heaphdr_refzero_norz(duk_hthread *thr, duk_heaphdr *h) {
 	duk__heaphdr_refzero_helper(thr, h, 1 /*skip_free_pending*/);
+}
+
+DUK_INTERNAL DUK_NOINLINE void duk_hstring_refzero(duk_hthread *thr, duk_hstring *h) {
+	duk__hstring_refzero_helper(thr, h);
+}
+
+DUK_INTERNAL DUK_NOINLINE void duk_hbuffer_refzero(duk_hthread *thr, duk_hbuffer *h) {
+	duk__hbuffer_refzero_helper(thr, h);
+}
+
+DUK_INTERNAL DUK_NOINLINE void duk_hobject_refzero(duk_hthread *thr, duk_hobject *h) {
+	duk__hobject_refzero_helper(thr, h, 0 /*skip_free_pending*/);
+}
+
+DUK_INTERNAL DUK_NOINLINE void duk_hobject_refzero_norz(duk_hthread *thr, duk_hobject *h) {
+	duk__hobject_refzero_helper(thr, h, 1 /*skip_free_pending*/);
 }
 
 #if !defined(DUK_USE_FAST_REFCOUNT_DEFAULT)
@@ -617,6 +694,8 @@ DUK_INTERNAL void duk_heaphdr_incref_allownull(duk_heaphdr *h) {
 }
 #endif
 
+/* FIXME no longer used */
+#if 0
 DUK_INTERNAL void duk_heaphdr_decref(duk_hthread *thr, duk_heaphdr *h) {
 	DUK_ASSERT(thr != NULL);
 	DUK_ASSERT(thr->heap != NULL);
@@ -635,6 +714,25 @@ DUK_INTERNAL void duk_heaphdr_decref(duk_hthread *thr, duk_heaphdr *h) {
 	duk_heaphdr_refzero(thr, h);
 }
 
+DUK_INTERNAL void duk_heaphdr_decref_norz(duk_hthread *thr, duk_heaphdr *h) {
+	DUK_ASSERT(thr != NULL);
+	DUK_ASSERT(thr->heap != NULL);
+	DUK_ASSERT(h != NULL);
+	DUK_ASSERT(DUK_HEAPHDR_HTYPE_VALID(h));
+	DUK_ASSERT(DUK_HEAPHDR_GET_REFCOUNT(h) >= 1);
+
+#if defined(DUK_USE_ROM_OBJECTS)
+	if (DUK_HEAPHDR_HAS_READONLY(h)) {
+		return;
+	}
+#endif
+	if (DUK_HEAPHDR_PREDEC_REFCOUNT(h) != 0) {
+		return;
+	}
+	duk__heaphdr_refzero_helper(thr, h, 1 /*skip_free_pending*/);
+}
+
+/* FIXME: norz variant */
 DUK_INTERNAL void duk_heaphdr_decref_allownull(duk_hthread *thr, duk_heaphdr *h) {
 	DUK_ASSERT(thr != NULL);
 	DUK_ASSERT(thr->heap != NULL);
@@ -655,8 +753,10 @@ DUK_INTERNAL void duk_heaphdr_decref_allownull(duk_hthread *thr, duk_heaphdr *h)
 	}
 	duk_heaphdr_refzero(thr, h);
 }
+#endif
 
-#else
+
+#else  /* DUK_USE_REFERENCE_COUNTING */
 
 /* no refcounting */
 
